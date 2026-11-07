@@ -9,7 +9,7 @@ local Mouse = LP:GetMouse()
 
 
 local PROJECT_NAME = "KrapyUrban"
-local VERSION = "v35-SilentAim"
+local VERSION = "v31-KrapyUrban"
 local LOGO_IMAGE = ""
 local REG = (getgenv and getgenv()) or _G
 
@@ -47,14 +47,16 @@ end
 
 
 local cfg = {
-    esp = true, silentAim = true, spd = 16, spdOn = false,
-    fov = 150, pred = 0.12, predOn = false, part = "Head",
-    showFov = true, teamCheck = false, maxDist = 800,
-    maxAimDist = 500, boxStyle = "full",
+    esp = true, aim = true, spd = 16, spdOn = false,
+    fov = 150, suavidad = 15, pred = 0.12, predOn = false, part = "Head",
+    showFov = true, mode = "mouse", teamCheck = false, maxDist = 800,
+    sticky = true, maxAimDist = 500, boxStyle = "full",
     color = Color3.fromRGB(120, 200, 255), tracerFrom = "bottom",
     jumpOn = false, jump = 50, key = Enum.KeyCode.E,
-    wallCheck = false, menuKey = Enum.KeyCode.Insert,
-    padUse = true, padVibrate = false,
+    wallCheck = false, power = false, menuKey = Enum.KeyCode.Insert,
+    padList = { Enum.KeyCode.ButtonL2 }, padCustom = nil, padUse = true,
+    padStick = false, padDeadzone = 20, padPower = 50,
+    padFallback = true, padVibrate = false, padAutoSwitch = true,
 }
 
 
@@ -192,11 +194,123 @@ local function hasLOS(cam, part, char)
 end
 
 
+-- ============================================================
+--  ENTRADA DE MANDO
+-- ============================================================
+local padDown = {}
+local padSeen = false
+
+
+local function isPadType(t)
+    return t == Enum.UserInputType.Gamepad1 or t == Enum.UserInputType.Gamepad2
+        or t == Enum.UserInputType.Gamepad3 or t == Enum.UserInputType.Gamepad4
+        or t == Enum.UserInputType.Gamepad5 or t == Enum.UserInputType.Gamepad6
+        or t == Enum.UserInputType.Gamepad7 or t == Enum.UserInputType.Gamepad8
+end
+
+
+cn(U.InputBegan, function(i)
+    if isPadType(i.UserInputType) then
+        padDown[i.KeyCode] = true
+        padSeen = true
+    end
+end)
+cn(U.InputEnded, function(i)
+    if isPadType(i.UserInputType) then padDown[i.KeyCode] = false end
+end)
+cn(U.GamepadConnected, function()
+    padDown = {}
+    padSeen = true
+end)
+cn(U.GamepadDisconnected, function() padDown = {} end)
+
+
+local function padCount()
+    local ok, list = pcall(function() return U:GetConnectedGamepads() end)
+    local n = (ok and list) and #list or 0
+    if n == 0 and padSeen then n = 1 end
+    return n
+end
+
+
+local function padKeyDown(key)
+    if padDown[key] then return true end
+    local ok, list = pcall(function() return U:GetConnectedGamepads() end)
+    if ok and list then
+        for _, gp in ipairs(list) do
+            local ok2, down = pcall(function() return U:IsGamepadButtonDown(gp, key) end)
+            if ok2 and down then
+                padSeen = true
+                return true
+            end
+        end
+    end
+    local ok3, down3 = pcall(function()
+        return U:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, key)
+    end)
+    if ok3 and down3 then
+        padSeen = true
+        return true
+    end
+    return false
+end
+
+
+local function stickMagnitude()
+    local best = 0
+    local function scan(gp)
+        local ok, state = pcall(function() return U:GetGamepadState(gp) end)
+        if ok and state then
+            for _, obj in ipairs(state) do
+                if obj.KeyCode == Enum.KeyCode.Thumbstick2 then
+                    local m = obj.Position.Magnitude
+                    if m > best then best = m end
+                end
+            end
+        end
+    end
+    local ok, list = pcall(function() return U:GetConnectedGamepads() end)
+    if ok and list then
+        for _, gp in ipairs(list) do scan(gp) end
+    end
+    scan(Enum.UserInputType.Gamepad1)
+    return best
+end
+
+
+local function buzz(strength)
+    if not cfg.padVibrate then return end
+    pcall(function()
+        HS:SetMotor(Enum.UserInputType.Gamepad1, Enum.VibrationMotor.Small, strength)
+    end)
+    task.delay(0.12, function()
+        pcall(function()
+            HS:SetMotor(Enum.UserInputType.Gamepad1, Enum.VibrationMotor.Small, 0)
+        end)
+    end)
+end
+
+
+local function padAiming()
+    local list = cfg.padCustom and { cfg.padCustom } or cfg.padList
+    for _, k in ipairs(list) do
+        if padKeyDown(k) then return true end
+    end
+    if cfg.padStick and stickMagnitude() >= (cfg.padDeadzone / 100) then
+        return true
+    end
+    return false
+end
+
+
 local Win, Page = {}, {}
 Win.__index = Win
 Page.__index = Page
 
 
+-- ============================================================
+--  VENTANA (Ancho optimizado a 385)
+-- ============================================================
 function Lib.newWindow(o)
     o = o or {}
     local self = setmetatable({}, Win)
@@ -420,6 +534,9 @@ function Lib.newWindow(o)
 end
 
 
+-- ============================================================
+--  SECCIONES Y ELEMENTOS
+-- ============================================================
 function Win.section(self, name, open)
     local box = mk("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
@@ -823,22 +940,120 @@ end)
 sEspLook:slider("Distancia máxima", 50, 2000, cfg.maxDist, 0, function(v) cfg.maxDist = v end)
 
 
-local ta = win:tab("SILENT AIM")
-local sAim = ta:section("SILENT CONFIG", true)
-sAim:toggle("Silent Aim Activo", cfg.silentAim, function(v) cfg.silentAim = v end)
+local ta = win:tab("AIMBOT")
+local sAim = ta:section("AIM", true)
+sAim:toggle("Aimbot", cfg.aim, function(v) cfg.aim = v end)
+sAim:toggle("Power aimbot", cfg.power, function(v) cfg.power = v end)
 sAim:toggle("Wall check", cfg.wallCheck, function(v) cfg.wallCheck = v end)
+sAim:toggle("Pegajoso", cfg.sticky, function(v) cfg.sticky = v end)
 sAim:dropdown("Zona", { "Cabeza", "Cuerpo" }, "Cabeza", function(v)
     cfg.part = (v == "Cabeza") and "Head" or "Torso"
 end)
+
+
+local modeDrop = sAim:dropdown("Activación", {
+    "Click der + táctil",
+    "Mando",
+    "Tecla",
+    "Siempre",
+}, "Click der + táctil", function(v)
+    if v == "Mando" then
+        cfg.mode = "pad"
+    elseif v == "Tecla" then
+        cfg.mode = "key"
+    elseif v == "Siempre" then
+        cfg.mode = "always"
+    else
+        cfg.mode = "mouse"
+    end
+end)
+
+
+sAim:keybind("Tecla de aim", Enum.KeyCode.E, function(k) cfg.key = k end)
 sAim:toggle("Círculo FOV", cfg.showFov, function(v) cfg.showFov = v end)
-sAim:slider("FOV de Silent", 30, 700, cfg.fov, 0, function(v) cfg.fov = v end)
-sAim:slider("Distancia máx.", 50, 1500, cfg.maxAimDist, 0, function(v) cfg.maxAimDist = v end)
+sAim:slider("FOV", 30, 700, cfg.fov, 0, function(v) cfg.fov = v end)
+sAim:slider("Distancia máx. de aim", 50, 1500, cfg.maxAimDist, 0, function(v) cfg.maxAimDist = v end)
+sAim:slider("Suavidad", 0, 100, cfg.suavidad, 0, function(v) cfg.suavidad = v end)
+
+
+local predTog = sAim:toggle("Predicción", cfg.predOn, function(v) cfg.predOn = v end)
+predTog.page:slider("Cantidad", 1, 30, math.floor(cfg.pred * 100), 0, function(v) cfg.pred = v / 100 end)
+
+
+local tmando = win:tab("CONTROLLER")
+local sPad = tmando:section("MANDO", true)
+local padStatus = sPad:label("Buscando mando...")
+
+
+sPad:toggle("Usar mando", cfg.padUse, function(v) cfg.padUse = v end)
+sPad:toggle("Cambiar a modo mando al conectar", cfg.padAutoSwitch, function(v) cfg.padAutoSwitch = v end)
+
+
+sPad:divider()
+sPad:label("BOTÓN DE AIM")
+sPad:dropdown("Botón", {
+    "L2 (apuntar)",
+    "R2 (disparar)",
+    "L2 + R2",
+    "L1 + R1",
+    "Cualquier gatillo/bumper",
+    "Botón personalizado",
+}, "L2 (apuntar)", function(v)
+    local map = {
+        ["L2 (apuntar)"] = { Enum.KeyCode.ButtonL2 },
+        ["R2 (disparar)"] = { Enum.KeyCode.ButtonR2 },
+        ["L2 + R2"] = { Enum.KeyCode.ButtonL2, Enum.KeyCode.ButtonR2 },
+        ["L1 + R1"] = { Enum.KeyCode.ButtonL1, Enum.KeyCode.ButtonR1 },
+        ["Cualquier gatillo/bumper"] = {
+            Enum.KeyCode.ButtonL1, Enum.KeyCode.ButtonL2,
+            Enum.KeyCode.ButtonR1, Enum.KeyCode.ButtonR2,
+        },
+    }
+    if map[v] then
+        cfg.padList = map[v]
+        cfg.padCustom = nil
+    end
+end)
+sPad:keybind("Botón personalizado", Enum.KeyCode.ButtonR2, function(k)
+    cfg.padCustom = k
+end)
+
+
+sPad:divider()
+sPad:label("STICK Y SENSACIÓN")
+sPad:toggle("Aim con stick derecho", cfg.padStick, function(v) cfg.padStick = v end)
+sPad:slider("Zona muerta stick", 5, 80, cfg.padDeadzone, 0, function(v) cfg.padDeadzone = v end)
+sPad:slider("Fuerza de aim (mando)", 10, 100, cfg.padPower, 0, function(v) cfg.padPower = v end)
+sPad:toggle("Vibración al enganchar", cfg.padVibrate, function(v) cfg.padVibrate = v end)
+sPad:toggle("Fallback a mouse sin mando", cfg.padFallback, function(v) cfg.padFallback = v end)
+
+
+cn(U.GamepadConnected, function()
+    if cfg.padAutoSwitch and cfg.padUse and cfg.mode ~= "always" and cfg.mode ~= "pad" then
+        modeDrop.set("Mando")
+    end
+end)
+
+
+task.spawn(function()
+    while padStatus and padStatus.Parent do
+        local n = padCount()
+        if n > 0 then
+            padStatus.Text = "Mando detectado · listo"
+            padStatus.TextColor3 = T.ok
+        else
+            padStatus.Text = "Sin mando · pulsa cualquier botón"
+            padStatus.TextColor3 = T.dim
+        end
+        task.wait(0.5)
+    end
+end)
 
 
 local tf = win:tab("FILTERS")
 local sFil = tf:section("EQUIPO", true)
 sFil:toggle("Ignorar equipo (ESP)", cfg.teamCheck, function(v) cfg.teamCheck = v end)
-sFil:toggle("Ignorar equipo (SILENT)", cfg.teamCheck, function(v) cfg.teamCheck = v end)
+sFil:toggle("Ignorar equipo (AIM)", cfg.teamCheck, function(v) cfg.teamCheck = v end)
 
 
 local tpTab = win:tab("PLAYERS")
@@ -1047,8 +1262,13 @@ local BONES = {
 
 
 -- ============================================================
---  OBTENCIÓN DE OBJETIVO PARA SILENT AIM
+--  AIMBOT
 -- ============================================================
+local locked = nil
+local snapUntil = 0
+local basePos, lastRoot = nil, nil
+
+
 local function targetAlive(part)
     if not part or not part.Parent then return false end
     local model = part:FindFirstAncestorOfClass("Model")
@@ -1056,84 +1276,140 @@ local function targetAlive(part)
     return h ~= nil and h.Health > 0
 end
 
-local function getSilentTarget()
-    if not cfg.silentAim then return nil end
-    local cam = workspace.CurrentCamera
-    if not cam then return nil end
-    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
 
-    local bestPart, bestDist = nil, math.huge
-    local myChar = LP.Character
-    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+local function mouseAiming()
+    return U:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+        or (U.TouchEnabled and not gMenu.Enabled and #U:GetTouches() > 0)
+end
+
+
+R:BindToRenderStep("UC_Aim", Enum.RenderPriority.Camera.Value + 1, function()
+    local cam = workspace.CurrentCamera
+    if not cam or not cfg.aim then
+        locked = nil
+        basePos, lastRoot = nil, nil
+        return
+    end
+
+
+    local aiming, usingPad = false, false
+    if cfg.mode == "always" then
+        aiming = true
+    elseif cfg.mode == "key" then
+        aiming = U:IsKeyDown(cfg.key)
+    elseif cfg.mode == "pad" then
+        if cfg.padUse then
+            usingPad = true
+            aiming = padAiming()
+            if not aiming and cfg.padFallback then aiming = mouseAiming() end
+        else
+            aiming = mouseAiming()
+        end
+    else
+        aiming = mouseAiming()
+    end
+
+
+    if not aiming then
+        locked = nil
+        basePos, lastRoot = nil, nil
+        return
+    end
+
+
+    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local now = tick()
+    local alpha = math.clamp(1 - 0.95 * (cfg.suavidad / 100), 0.05, 1)
+    if now < snapUntil or cfg.power then alpha = 1 end
+    if usingPad then
+        alpha = math.clamp(alpha * (cfg.padPower / 50), 0.05, 1)
+    end
+
+
+    local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     local myPos = myRoot and myRoot.Position
 
-    for _, pl in ipairs(P:GetPlayers()) do
-        if pl ~= LP then
-            local c = pl.Character
-            local h = c and c:FindFirstChildOfClass("Humanoid")
-            local root = c and c:FindFirstChild("HumanoidRootPart")
-            local team = cfg.teamCheck and pl.Team and LP.Team and pl.Team == LP.Team
-            local near = (not myPos) or (root and (root.Position - myPos).Magnitude <= cfg.maxAimDist)
-            
-            if h and h.Health > 0 and not team and near then
-                local part
-                if cfg.part == "Head" then
-                    part = c:FindFirstChild("Head")
+
+    if not basePos then
+        basePos = cam.CFrame.Position
+        lastRoot = myPos
+    elseif myPos and lastRoot then
+        basePos = basePos + (myPos - lastRoot)
+        lastRoot = myPos
+    end
+
+
+    if locked then
+        local char = locked:FindFirstAncestorOfClass("Model")
+        if not targetAlive(locked) then
+            locked = nil
+        elseif char and not hasLOS(cam, locked, char) then
+            locked = nil
+        elseif not cfg.power then
+            if myPos and (locked.Position - myPos).Magnitude > cfg.maxAimDist then
+                locked = nil
+            else
+                local sp, on = cam:WorldToViewportPoint(locked.Position)
+                if cfg.sticky then
+                    if not on then locked = nil end
                 else
-                    part = c:FindFirstChild("UpperTorso") or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")
-                end
-                if part and hasLOS(cam, part, c) then
-                    local sp, on = cam:WorldToViewportPoint(part.Position)
-                    if on then
-                        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                        if d < cfg.fov and d < bestDist then
-                            bestPart, bestDist = part, d
-                        end
+                    if not on or (Vector2.new(sp.X, sp.Y) - center).Magnitude > cfg.fov * 1.7 then
+                        locked = nil
                     end
                 end
             end
         end
     end
-    return bestPart
-end
 
 
--- ============================================================
---  HOOK DE SILENT AIM (METAMETHOD)
--- ============================================================
-pcall(function()
-    local mt = getrawmetatable(game)
-    setreadonly(mt, false)
-    local oldNamecall = mt.__namecall
-
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        
-        if cfg.silentAim and (method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRay" or method == "Raycast") then
-            local targetPart = getSilentTarget()
-            if targetPart and self == workspace then
-                if method == "Raycast" then
-                    local origin = args[1]
-                    local direction = (targetPart.Position - origin).Unit * args[2].Magnitude
-                    args[2] = direction
-                    return oldNamecall(self, unpack(args))
-                elseif method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" then
-                    local ray = args[1]
-                    local newRay = Ray.new(ray.Origin, (targetPart.Position - ray.Origin).Unit * ray.Direction.Magnitude)
-                    args[1] = newRay
-                    return oldNamecall(self, unpack(args))
+    if not locked then
+        local best, bd = nil, math.huge
+        for _, pl in ipairs(P:GetPlayers()) do
+            if pl ~= LP then
+                local c = pl.Character
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                local root = c and c:FindFirstChild("HumanoidRootPart")
+                local team = cfg.teamCheck and pl.Team and LP.Team and pl.Team == LP.Team
+                local near = cfg.power or (not myPos) or (root and (root.Position - myPos).Magnitude <= cfg.maxAimDist)
+                if h and h.Health > 0 and not team and near then
+                    local part
+                    if cfg.part == "Head" then
+                        part = c:FindFirstChild("Head")
+                    else
+                        part = c:FindFirstChild("UpperTorso") or c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso")
+                    end
+                    if part and hasLOS(cam, part, c) then
+                        local sp, on = cam:WorldToViewportPoint(part.Position)
+                        if on then
+                            local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                            if (cfg.power or d < cfg.fov) and d < bd then
+                                best, bd = part, d
+                            end
+                        end
+                    end
                 end
             end
         end
-        return oldNamecall(self, ...)
-    end)
-    setreadonly(mt, true)
+        if best then
+            locked = best
+            snapUntil = now + 0.15
+            if usingPad then buzz(0.45) end
+        end
+    end
+
+
+    if locked then
+        local aimAt = locked.Position
+        if cfg.predOn and cfg.pred > 0 then
+            aimAt = aimAt + locked.AssemblyLinearVelocity * cfg.pred
+        end
+        cam.CFrame = cam.CFrame:Lerp(CFrame.lookAt(basePos, aimAt), alpha)
+    end
 end)
 
 
 -- ============================================================
---  BUCLE VISUAL ESP & FOV
+--  BUCLE VISUAL ESP
 -- ============================================================
 R.RenderStepped:Connect(function()
     local cam = workspace.CurrentCamera
@@ -1142,7 +1418,7 @@ R.RenderStepped:Connect(function()
     local col = cfg.color
 
     if fovCircle then
-        fovCircle.Visible = cfg.silentAim and cfg.showFov
+        fovCircle.Visible = cfg.aim and cfg.showFov and not cfg.power
         fovCircle.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
         fovCircle.Radius = cfg.fov
         fovCircle.Color = col
@@ -1195,7 +1471,7 @@ R.RenderStepped:Connect(function()
                             { minX, minY, minX + ln, minY }, { minX, minY, minX, minY + ln },
                             { maxX, minY, maxX - ln, minY }, { maxX, minY, maxX, minY + ln },
                             { minX, maxY, minX + ln, maxY }, { minX, maxY, minX, minY - ln },
-                            { maxX, maxY, maxX - ln, maxY }, { maxX, maxY, maxX, maxX - ln },
+                            { maxX, maxY, maxX - ln, maxY }, { maxX, maxY, maxX, maxY - ln },
                         }
                         for i, l in ipairs(d.box) do
                             local s = segs[i]
@@ -1307,6 +1583,7 @@ end)
 --  DESCARGA / UNLOAD
 -- ============================================================
 REG.__ucUnload = function()
+    pcall(function() R:UnbindFromRenderStep("UC_Aim") end)
     pcall(Lib.destroy)
     for _, d in ipairs(DRAWINGS) do pcall(function() d:Remove() end) end
     table.clear(DRAWINGS)
@@ -1319,8 +1596,13 @@ REG.__ucUnload = function()
             if cfg.jumpOn then hum.JumpPower = baseJump or 50 end
         end)
     end
+    pcall(function()
+        HS:SetMotor(Enum.UserInputType.Gamepad1, Enum.VibrationMotor.Small, 0)
+    end)
     print("[UC] descargado")
 end
 
 
 print("[" .. PROJECT_NAME .. "] " .. VERSION .. " cargado con éxito en Xeno")
+
+
